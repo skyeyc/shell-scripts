@@ -17,7 +17,7 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # 版本信息，请勿修改
 # =================
-SHELL_VERSION=19
+SHELL_VERSION=20
 CONFIG_VERSION=6
 INIT_VERSION=3
 # =================
@@ -56,6 +56,7 @@ D_DATASHARD=10
 D_PARITYSHARD=3
 D_DSCP=0
 D_NOCOMP='false'
+D_QUIET='false'
 D_SNMPPERIOD=60
 D_PPROF='false'
 
@@ -99,7 +100,7 @@ usage() {
 	    update           检查更新
 	    manual           自定义 Kcptun 版本安装
 	    help             查看脚本使用说明
-	    add              添加一个实例, 多用户使用
+	    add              添加一个实例, 多端口加速
 	    reconfig <id>    重新配置实例
 	    show <id>        显示实例详细配置
 	    log <id>         显示实例日志
@@ -785,14 +786,14 @@ install_supervisor() {
 
 	(
 		set -x
-		easy_install -U supervisor
+		easy_install -i https://pypi.python.org/simple/ -U supervisor
 	)
 
 	if [ "$?" != "0" ]; then
 		cat >&2 <<-EOF
 		错误: 安装 Supervisor 失败，
 		请尝试使用
-		  easy_install -U supervisor
+		  easy_install -i https://pypi.python.org/simple/ -U supervisor
 		来手动安装。
 		EOF
 
@@ -1095,9 +1096,7 @@ set_kcptun_config() {
 	EOF
 
 	[ -z "$crypt" ] && crypt="$D_CRYPT"
-	local crypt_list=( "aes" "aes-128" "aes-192" "salsa20" "blowfish" \
-		"twofish" "cast5" "3des" "tea" "xtea" "xor" "none" )
-	local count="${#crypt_list[@]}"
+	local crypt_list="aes aes-128 aes-192 salsa20 blowfish twofish cast5 3des tea xtea xor none"
 	local i=0
 	cat >&1 <<-'EOF'
 	请选择加密方式(crypt)
@@ -1109,15 +1108,15 @@ set_kcptun_config() {
 	while :
 	do
 
-		while [ $i -lt $count ]; do
-			echo "($(expr $i + 1)) ${crypt_list[$i]}"
+		for c in $crypt_list; do
 			i=$(expr $i + 1)
+			echo "(${i}) ${c}"
 		done
 
 		read -p "(默认: ${crypt}) 请选择 [1~$i]: " input
 		if [ -n "$input" ]; then
 			if is_number "$input" && [ $input -ge 1 ] && [ $input -le $i ]; then
-				crypt=${crypt_list[$(expr $input - 1)]}
+				crypt=$(echo "$crypt_list" | cut -d' ' -f ${input})
 			else
 				echo "请输入有效数字 1~$i!"
 				i=0
@@ -1129,7 +1128,6 @@ set_kcptun_config() {
 
 	input=
 	i=0
-	count=0
 	cat >&1 <<-EOF
 	-----------------------------
 	加密方式 = ${crypt}
@@ -1137,8 +1135,7 @@ set_kcptun_config() {
 	EOF
 
 	[ -z "$mode" ] && mode="$D_MODE"
-	local mode_list=( "normal" "fast" "fast2" "fast3" "manual" )
-	count=${#mode_list[@]}
+	local mode_list="normal fast fast2 fast3 manual"
 	i=0
 	cat >&1 <<-'EOF'
 	请选择加速模式(mode)
@@ -1149,15 +1146,15 @@ set_kcptun_config() {
 	while :
 	do
 
-		while [ $i -lt $count ]; do
-			echo "($(expr $i + 1)) ${mode_list[$i]}"
+		for m in $mode_list; do
 			i=$(expr $i + 1)
+			echo "(${i}) ${m}"
 		done
 
 		read -p "(默认: ${mode}) 请选择 [1~$i]: " input
 		if [ -n "$input" ]; then
 			if is_number "$input" && [ $input -ge 1 ] && [ $input -le $i ]; then
-				mode=${mode_list[$(expr $input - 1)]}
+				mode=$(echo "$mode_list" | cut -d ' ' -f ${input})
 			else
 				echo "请输入有效数字 1~$i!"
 				i=0
@@ -1168,7 +1165,6 @@ set_kcptun_config() {
 	done
 
 	input=
-	count=0
 	i=0
 	cat >&1 <<-EOF
 	---------------------------
@@ -1366,6 +1362,37 @@ set_kcptun_config() {
 	cat >&1 <<-EOF
 	---------------------------
 	nocomp = ${nocomp}
+	---------------------------
+	EOF
+
+	[ -z "$quiet" ] && quiet="$D_QUIET"
+	while :
+	do
+		cat >&1 <<-'EOF'
+		是否屏蔽 open/close 日志输出?
+		EOF
+		read -p "(默认: ${quiet}) [y/n]: " yn
+		if [ -n "$yn" ]; then
+			case "${yn:0:1}" in
+				y|Y)
+					quiet='true'
+					;;
+				n|N)
+					quiet='false'
+					;;
+				*)
+					echo "输入有误，请重新输入!"
+					continue
+					;;
+			esac
+		fi
+		break
+	done
+
+	yn=
+	cat >&1 <<-EOF
+	---------------------------
+	quiet = ${quiet}
 	---------------------------
 	EOF
 
@@ -1792,7 +1819,7 @@ gen_kcptun_config() {
 		fi
 	}
 
-	write_configs_to_file "snmplog" "snmpperiod" "pprof" "acknodelay" "nodelay" \
+	write_configs_to_file "quiet" "snmplog" "snmpperiod" "pprof" "acknodelay" "nodelay" \
 		"interval" "resend" "nc" "sockbuf" "keepalive"
 
 	if ! grep -q "^${run_user}:" '/etc/passwd'; then
@@ -1875,10 +1902,13 @@ select_instance() {
 		local files=
 		files=$(ls -lt '/etc/supervisor/conf.d/' | grep "^-" | awk '{print $9}' | grep "^kcptun[0-9]*\.conf$")
 		local i=0
-		local array=()
+		local array=""
+		local id=""
 		for file in $files; do
+			id="$(echo "$file" | grep -oE "[0-9]+")"
+			array="${array}${id}#"
+
 			i=$(expr $i + 1)
-			array[$i]="$(echo "$file" | grep -oE "[0-9]+")"
 			echo "(${i}) ${file%.*}"
 		done
 
@@ -1900,7 +1930,7 @@ select_instance() {
 				continue
 			fi
 
-			current_instance_id=${array[$sel]}
+			current_instance_id=$(echo "$array" | cut -d '#' -f ${sel})
 			break
 		done
 	fi
@@ -2024,7 +2054,7 @@ show_current_instance_info() {
 	}
 
 	show_configs "key" "crypt" "mode" "mtu" "sndwnd" "rcvwnd" "datashard" \
-		"parityshard" "dscp" "nocomp" "nodelay" "interval" "resend" \
+		"parityshard" "dscp" "nocomp" "quiet" "nodelay" "interval" "resend" \
 		"nc" "acknodelay" "sockbuf" "keepalive"
 
 	show_version_and_client_url
@@ -2061,7 +2091,7 @@ show_current_instance_info() {
 	}
 
 	gen_client_configs "crypt" "mode" "mtu" "sndwnd" "rcvwnd" "datashard" \
-		"parityshard" "dscp" "nocomp" "nodelay" "interval" "resend" \
+		"parityshard" "dscp" "nocomp" "quiet" "nodelay" "interval" "resend" \
 		"nc" "acknodelay" "sockbuf" "keepalive"
 
 	cat >&1 <<-EOF
@@ -2095,7 +2125,7 @@ show_current_instance_info() {
 	}
 
 	gen_client_configs "crypt" "mode" "mtu" "sndwnd" "rcvwnd" "datashard" \
-		"parityshard" "dscp" "nocomp" "nodelay" "interval" "resend" \
+		"parityshard" "dscp" "nocomp" "quiet" "nodelay" "interval" "resend" \
 		"nc" "acknodelay" "sockbuf" "keepalive"
 
 	cat >&1 <<-EOF
@@ -2661,7 +2691,7 @@ installed_check() {
 			请选择你希望的操作:
 			(1) 覆盖安装
 			(2) 重新配置
-			(3) 添加实例(多用户)
+			(3) 添加实例(多端口)
 			(4) 检查更新
 			(5) 查看配置
 			(6) 查看日志输出
